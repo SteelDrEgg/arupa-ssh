@@ -1,0 +1,17 @@
+# Go
+/fileserve
+/fileserve-plugin
+/dist/
+/plugins/
+
+# Frontend dependencies and generated output
+/ui/node_modules/
+/ui/.svelte-kit/
+/ui/build/
+/ui/src/lib/paraglide/
+
+# Editors and operating systems
+.DS_Store
+/.idea/
+
+**/*_test.go

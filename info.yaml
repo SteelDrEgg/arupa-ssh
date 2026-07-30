@@ -1,0 +1,9 @@
+Name: ssh
+Version: 0.3.0
+Type: grpc
+ContractVersion: 2
+Command: $PLUGIN_ROOT/ssh
+DisplayName: SSH
+Category: core
+Icon: /ssh/pages/icon/terminal.svg
+IconSolid: /ssh/pages/icon/terminal-solid.svg
