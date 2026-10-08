@@ -11,70 +11,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"arupa-ssh/core/internal/sshc"
-	arupa "github.com/SteelDrEgg/arupa-sdk/golang"
 )
-
-// connectSSH creates an SSH client/session from a browser connect_ssh event.
-func (s *sshServer) connectSSH(ctx context.Context, event arupa.SocketEvent, emitter arupa.Emitter) error {
-	req, err := parseConnectRequest(event.Payload)
-	if err != nil {
-		return emitError(emitter, event.SocketID, "Invalid connection data: "+err.Error())
-	}
-
-	hostConfig, authMethods, err := s.prepareSSH(req)
-	if err != nil {
-		return emitError(emitter, event.SocketID, err.Error())
-	}
-	req.Password = ""
-	req.Passphrase = ""
-
-	connectCtx, pending := s.startConnection(ctx, event.SocketID, hostConfig.Timeout)
-	sshSess, stdout, err := openSSH(connectCtx, hostConfig, authMethods)
-	if err != nil {
-		return s.emitConnectError(connectCtx, event.SocketID, pending, emitter, err.Error())
-	}
-
-	if !s.activateSession(event.SocketID, pending, sshSess) {
-		sshSess.close()
-		return nil
-	}
-	go s.pipeOutput(event.SocketID, stdout, sshSess)
-
-	return arupa.EmitJSON(emitter, socketNamespace, event.SocketID, eventSSHConnected, map[string]any{
-		"host": req.Host,
-		"port": req.Port,
-		"user": req.Username,
-	})
-}
-
-// emitConnectError reports a failed current attempt. Cancellation caused by a
-// disconnect or a newer attempt is expected and does not produce a stale UI
-// error; a deadline still produces a useful timeout message.
-func (s *sshServer) emitConnectError(connectCtx context.Context, socketID string, pending *pendingConnection, emitter arupa.Emitter, message string) error {
-	if !s.finishConnection(socketID, pending) {
-		return nil
-	}
-	if connectCtx.Err() == context.Canceled {
-		return nil
-	}
-	if connectCtx.Err() == context.DeadlineExceeded {
-		message = "SSH connection timed out"
-	}
-	return emitError(emitter, socketID, message)
-}
-
-func emitError(emitter arupa.Emitter, socketID, message string) error {
-	return arupa.EmitJSON(emitter, socketNamespace, socketID, eventSSHError, message)
-}
-
-// parseConnectRequest decodes and normalizes the first Socket.IO argument.
-func parseConnectRequest(payload []byte) (connectRequest, error) {
-	var req connectRequest
-	if err := decodeFirstArg(payload, &req); err != nil {
-		return req, err
-	}
-	return normalizeConnectRequest(req)
-}
 
 func normalizeConnectRequest(req connectRequest) (connectRequest, error) {
 	req.Host = strings.TrimSpace(req.Host)

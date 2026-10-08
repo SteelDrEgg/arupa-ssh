@@ -27,10 +27,6 @@ const (
 	uiPath           = "/ssh/pages/"
 	entryRouteID     = "entry"
 
-	// socketNamespace is retained for the legacy Socket.IO adapter. The v2
-	// runtime serves the terminal through websocketPath instead.
-	socketNamespace = "/ssh"
-
 	eventConnectSSH    = "connect_ssh"
 	eventTerminalInput = "terminal_input"
 	eventResize        = "resize"
@@ -43,18 +39,13 @@ const (
 )
 
 // sshServer owns the SSH core and the HTTP server exposed through the
-// v2 inherited proxy listener. The legacy Socket.IO listener remains available
-// as an application adapter, but no Socket.IO transport is registered.
+// v2 inherited proxy listener.
 type sshServer struct {
 	sdk           *arupagrpc.Service
 	httpServer    *http.Server
 	contentRoot   string
 	settingsStore sshSettingsStore
-	events        *arupa.SocketListener
-	mu            sync.RWMutex
 	sshConfigPath string
-	sessions      map[string]*sshSession
-	pending       map[string]*pendingConnection
 
 	settingsMu      sync.RWMutex
 	settings        map[string]savedConnection
@@ -65,18 +56,8 @@ type sshServer struct {
 func newSSHServer() *sshServer {
 	s := &sshServer{
 		contentRoot: findContentRoot(),
-		sessions:    make(map[string]*sshSession),
-		pending:     make(map[string]*pendingConnection),
 		settings:    make(map[string]savedConnection),
 	}
-	events := arupa.NewSocketListener()
-	_ = events.On(eventConnectSSH, s.connectSSH)
-	_ = events.On(eventTerminalInput, s.writeInput)
-	_ = events.On(eventResize, s.resize)
-	_ = events.On(eventDisconnect, func(_ context.Context, event arupa.SocketEvent, _ arupa.Emitter) error {
-		s.cleanup(event.SocketID)
-		return nil
-	})
 
 	s.sdk = &arupagrpc.Service{
 		Info: arupa.ServiceInfo{
@@ -84,7 +65,6 @@ func newSSHServer() *sshServer {
 			Version: pluginVersion,
 		},
 		Handler:    s.httpHandler(),
-		Events:     events,
 		OnRegister: s.configure,
 	}
 	s.httpServer = &http.Server{
@@ -94,7 +74,6 @@ func newSSHServer() *sshServer {
 		MaxHeaderBytes:    1 << 20,
 	}
 	s.settingsStore = sshSettingsStore{params: s.sdk}
-	s.events = events
 	return s
 }
 

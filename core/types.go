@@ -1,6 +1,6 @@
 package main
 
-// connectRequest is the browser payload for the connect_ssh transport event.
+// connectRequest is the browser payload for the connect_ssh WebSocket event.
 type connectRequest struct {
 	Host       string `json:"host"`
 	Port       string `json:"port"`

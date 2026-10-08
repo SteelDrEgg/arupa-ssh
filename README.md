@@ -33,11 +33,13 @@ Server events use the same envelope and are `ssh_connected`, `terminal_output`,
 `ssh_error`, and `ssh_disconnected`. One WebSocket owns at most one SSH session;
 closing the WebSocket cancels an in-progress connection and closes the session.
 
-The terminal page reads Secret Manager metadata from `GET /keys` and reveals a
-selected password through `POST /keys/reveal`. Secret Manager is a password
+The terminal page reads Secret Manager metadata from
+`GET /secret-manager/secrets` and reveals a selected password through
+`POST /secret-manager/secrets/{name}/reveal`. Secret Manager is a password
 source, not a separate SSH authentication method. The authenticated browser
 performs these same-origin HTTP calls, and only the revealed value is sent as
-the SSH password.
+the SSH password. Secrets protected with a passphrase require it at reveal time;
+identity-protected secrets do not.
 
 ## Saved connections
 

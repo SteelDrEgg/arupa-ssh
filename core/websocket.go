@@ -43,8 +43,7 @@ type websocketOutbound struct {
 }
 
 // webTerminal owns exactly one browser WebSocket and at most one SSH session.
-// It is independent of the SDK and Socket.IO transports; the inherited HTTP
-// server is only responsible for constructing and serving it.
+// The inherited HTTP server upgrades the connection and serves the terminal.
 type webTerminal struct {
 	server *sshServer
 	conn   *websocket.Conn
