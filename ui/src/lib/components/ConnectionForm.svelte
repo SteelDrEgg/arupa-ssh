@@ -32,29 +32,61 @@
 		model.secretPassphrase = '';
 		if (model.passwordSource === 'secret' && secrets.length === 0) onrefreshsecrets(model.secretName);
 	}
+
+	function changeTargetType(event: Event) {
+		model.targetType = (event.currentTarget as HTMLSelectElement).value as ConnectionFormModel['targetType'];
+		if (model.targetType === 'ssh_config') {
+			model.port = '';
+		} else if (!model.port) {
+			model.port = '22';
+		}
+	}
 </script>
 
 <div class="grid gap-4">
+	<label class="fieldset">
+		<span class="fieldset-legend">{m.target_type({}, localeOptions)}</span>
+		<select class="select w-full" bind:value={model.targetType} onchange={changeTargetType}>
+			<option value="address">{m.direct_address({}, localeOptions)}</option>
+			<option value="ssh_config">{m.ssh_config_alias({}, localeOptions)}</option>
+		</select>
+	</label>
 	<div class="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
 		<label class="fieldset">
 			<span class="fieldset-legend">{m.host({}, localeOptions)}</span>
 			<input
 				class="input w-full"
 				bind:value={model.host}
-				placeholder={m.host_placeholder({}, localeOptions)}
+				placeholder={
+					model.targetType === 'address'
+						? m.host_placeholder({}, localeOptions)
+						: m.ssh_config_alias_placeholder({}, localeOptions)
+				}
 				autocomplete="url"
 				required
 			/>
 		</label>
 		<label class="fieldset">
 			<span class="fieldset-legend">{m.port({}, localeOptions)}</span>
-			<input class="input w-full" type="number" bind:value={model.port} min="1" max="65535" required />
+			<input
+				class="input w-full"
+				type="number"
+				bind:value={model.port}
+				min="1"
+				max="65535"
+				required={model.targetType === 'address'}
+			/>
 		</label>
 	</div>
 
 	<label class="fieldset">
 		<span class="fieldset-legend">{m.username({}, localeOptions)}</span>
-		<input class="input w-full" bind:value={model.username} autocomplete="username" required />
+		<input
+			class="input w-full"
+			bind:value={model.username}
+			autocomplete="username"
+			required={model.targetType === 'address'}
+		/>
 	</label>
 
 	<div

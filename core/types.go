@@ -1,13 +1,23 @@
 package main
 
-// connectRequest is the browser payload for the connect_ssh WebSocket event.
-type connectRequest struct {
-	Host       string `json:"host"`
-	Port       string `json:"port"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	PrivateKey string `json:"privateKey"`
-	Passphrase string `json:"passphrase"`
+// sshConnectInput is the transport-independent request consumed by the SSH
+// application.
+type sshConnectInput struct {
+	TargetType string
+	Host       string
+	Port       string
+	Username   string
+	Auth       sshAuthenticationInput
+}
+
+// sshAuthenticationInput selects exactly one credential source.
+type sshAuthenticationInput struct {
+	Method           string
+	Password         string
+	SecretName       string
+	SecretPassphrase string
+	PrivateKey       string
+	Passphrase       string
 }
 
 // resizeRequest is the browser payload for PTY resize events.

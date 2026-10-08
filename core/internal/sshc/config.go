@@ -26,7 +26,6 @@ func LoadConfig(hostAlias string, configPath string) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse SSH config: %w", err)
 	}
-
 	getValue := func(key, defaultValue string) string {
 		value, _ := sshConfig.Get(hostAlias, key)
 		if value == "" {
@@ -40,7 +39,8 @@ func LoadConfig(hostAlias string, configPath string) (*Host, error) {
 		User:         getValue("User", os.Getenv("USER")),
 		Hostname:     getValue("HostName", hostAlias),
 		Port:         getValue("Port", "22"),
-		IdentityFile: getValue("IdentityFile", "$HOME/.ssh/id_rsa"),
+		IdentityFile: getValue("IdentityFile", ""),
+		HostKeyAlias: getValue("HostKeyAlias", ""),
 		Timeout:      cast.ToDuration(getValue("ConnectTimeout", "10")) * time.Second,
 	}
 	host.IdentityFile = os.ExpandEnv(host.IdentityFile)

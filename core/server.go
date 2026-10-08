@@ -44,8 +44,8 @@ type sshServer struct {
 	sdk           *arupagrpc.Service
 	httpServer    *http.Server
 	contentRoot   string
+	app           *sshApplication
 	settingsStore sshSettingsStore
-	sshConfigPath string
 
 	settingsMu      sync.RWMutex
 	settings        map[string]savedConnection
@@ -67,6 +67,7 @@ func newSSHServer() *sshServer {
 		Handler:    s.httpHandler(),
 		OnRegister: s.configure,
 	}
+	s.app = &sshApplication{secrets: secretManagerClient{sender: s.sdk}}
 	s.httpServer = &http.Server{
 		Handler:           s.sdk.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -151,6 +152,7 @@ func (s *sshServer) serveHTTP(listener net.Listener) {
 func (s *sshServer) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(savedConnectionsPath, s.handleConnectionsHTTP)
+	mux.HandleFunc(secretListPath, s.handleSecretListHTTP)
 	mux.HandleFunc(websocketPath, s.handleWebSocket)
 	mux.Handle(uiPath, http.StripPrefix(
 		uiPath,
@@ -208,7 +210,9 @@ func (s *sshServer) configureParams(params map[string]string) error {
 	if err != nil {
 		return err
 	}
-	s.sshConfigPath = settings.SSHConfigPath
+	if s.app != nil {
+		s.app.configure(settings)
+	}
 	s.settingsMu.Lock()
 	s.settings = settings.Connections
 	s.settingsMu.Unlock()

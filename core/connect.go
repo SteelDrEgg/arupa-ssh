@@ -13,31 +13,104 @@ import (
 	"arupa-ssh/core/internal/sshc"
 )
 
-func normalizeConnectRequest(req connectRequest) (connectRequest, error) {
+// sshApplication contains SSH behavior shared by the WebSocket adapter and
+// other future transports. It owns target resolution, authentication, and
+// opening the SSH PTY; it does not know about HTTP or WebSocket messages.
+type sshApplication struct {
+	secrets        secretManager
+	sshConfigPath  string
+	knownHostsPath string
+}
+
+func (app *sshApplication) configure(settings sshSettings) {
+	app.sshConfigPath = expandHome(settings.SSHConfigPath)
+	app.knownHostsPath = expandHome(strings.TrimSpace(settings.KnownHostsPath))
+}
+
+func normalizeSSHConnectInput(req sshConnectInput) (sshConnectInput, error) {
+	req.TargetType = strings.TrimSpace(req.TargetType)
+	if req.TargetType == "" {
+		req.TargetType = targetTypeAddress
+	}
 	req.Host = strings.TrimSpace(req.Host)
 	req.Port = strings.TrimSpace(req.Port)
 	req.Username = strings.TrimSpace(req.Username)
-	req.PrivateKey = expandHome(strings.TrimSpace(req.PrivateKey))
-	if req.Port == "" {
-		req.Port = "22"
+	req.Auth.Method = strings.TrimSpace(req.Auth.Method)
+	req.Auth.SecretName = strings.TrimSpace(req.Auth.SecretName)
+	req.Auth.PrivateKey = expandHome(strings.TrimSpace(req.Auth.PrivateKey))
+
+	if req.Host == "" {
+		return req, fmt.Errorf("host is required")
 	}
-	if req.Host == "" || req.Username == "" {
-		return req, fmt.Errorf("host and username are required")
+	switch req.TargetType {
+	case targetTypeAddress:
+		if req.Username == "" {
+			return req, fmt.Errorf("username is required for a direct address")
+		}
+		if req.Port == "" {
+			req.Port = "22"
+		}
+	case targetTypeSSHConfig:
+		// Username and port may be supplied by the selected SSH config alias.
+	default:
+		return req, fmt.Errorf("unsupported target type %q", req.TargetType)
 	}
-	port, err := strconv.Atoi(req.Port)
-	if err != nil || port < 1 || port > 65535 {
-		return req, fmt.Errorf("port must be between 1 and 65535")
+	if req.Port != "" {
+		port, err := strconv.Atoi(req.Port)
+		if err != nil || port < 1 || port > 65535 {
+			return req, fmt.Errorf("port must be between 1 and 65535")
+		}
+	}
+
+	switch req.Auth.Method {
+	case authTypePassword:
+		if req.Auth.Password == "" {
+			return req, fmt.Errorf("password is required")
+		}
+		if req.Auth.SecretName != "" || req.Auth.SecretPassphrase != "" ||
+			req.Auth.PrivateKey != "" || req.Auth.Passphrase != "" {
+			return req, fmt.Errorf("password authentication contains fields for another method")
+		}
+	case authTypeSecret:
+		if req.Auth.SecretName == "" {
+			return req, fmt.Errorf("Secret Manager entry is required")
+		}
+		if req.Auth.Password != "" || req.Auth.PrivateKey != "" || req.Auth.Passphrase != "" {
+			return req, fmt.Errorf("Secret Manager authentication contains fields for another method")
+		}
+	case authTypeKey:
+		if req.Auth.Password != "" || req.Auth.SecretName != "" || req.Auth.SecretPassphrase != "" {
+			return req, fmt.Errorf("key authentication contains fields for another method")
+		}
+	default:
+		return req, fmt.Errorf("unsupported authentication method %q", req.Auth.Method)
 	}
 	return req, nil
 }
 
-func (s *sshServer) prepareSSH(req connectRequest) (*sshc.Host, []ssh.AuthMethod, error) {
-	hostConfig := s.resolveHostConfig(req)
-	authMethods, err := s.authMethods(req, hostConfig)
+// Connect resolves one explicitly selected target and authentication method,
+// then opens its SSH shell. The caller owns cancellation and the returned
+// session lifecycle.
+func (app *sshApplication) Connect(
+	ctx context.Context,
+	request sshConnectInput,
+) (*sshSession, io.Reader, error) {
+	req, err := normalizeSSHConnectInput(request)
 	if err != nil {
 		return nil, nil, err
 	}
-	return hostConfig, authMethods, nil
+	host, err := app.resolveHostConfig(req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	connectContext, cancel := context.WithTimeout(ctx, host.Timeout)
+	defer cancel()
+	authMethods, err := app.authMethods(connectContext, req, host)
+	if err != nil {
+		return nil, nil, err
+	}
+	return openSSH(connectContext, host, authMethods)
 }
 
 func openSSH(ctx context.Context, hostConfig *sshc.Host, authMethods []ssh.AuthMethod) (*sshSession, io.Reader, error) {
@@ -67,91 +140,98 @@ func openSSH(ctx context.Context, hostConfig *sshc.Host, authMethods []ssh.AuthM
 	return newSSHSession(sshClient, session, stdin), stdout, nil
 }
 
-// resolveHostConfig loads ~/.ssh/config aliases when appropriate, then applies
-// explicit values sent by the browser.
-func (s *sshServer) resolveHostConfig(req connectRequest) *sshc.Host {
-	if shouldLoadSSHConfig(req.Host) {
-		if cfg, err := sshc.LoadConfig(req.Host, expandHome(s.sshConfigPath)); err == nil {
-			if req.Username != "" {
-				cfg.User = req.Username
-			}
-			if req.Port != "" {
-				cfg.Port = req.Port
-			}
-			return cfg
+func (app *sshApplication) resolveHostConfig(req sshConnectInput) (*sshc.Host, error) {
+	var host *sshc.Host
+	switch req.TargetType {
+	case targetTypeAddress:
+		host = &sshc.Host{
+			User:     req.Username,
+			Host:     req.Host,
+			Hostname: req.Host,
+			Port:     req.Port,
+			Timeout:  30 * time.Second,
 		}
-	}
-
-	return &sshc.Host{
-		User:     req.Username,
-		Host:     req.Host,
-		Hostname: req.Host,
-		Port:     req.Port,
-		Timeout:  30 * time.Second,
-	}
-}
-
-// shouldLoadSSHConfig reports whether host looks like an SSH config alias.
-func shouldLoadSSHConfig(host string) bool {
-	return !strings.Contains(host, ".") && host != "localhost"
-}
-
-// authMethods builds SSH auth methods from password, explicit key, SSH config
-// IdentityFile, or common default key paths.
-func (s *sshServer) authMethods(req connectRequest, hostConfig *sshc.Host) ([]ssh.AuthMethod, error) {
-	var methods []ssh.AuthMethod
-	if req.Password != "" {
-		methods = append(methods, ssh.Password(req.Password))
-	}
-
-	for _, keyPath := range candidateKeyPaths(req, hostConfig) {
-		auth, err := sshc.LoadAuth("", []*sshc.Identity{{
-			KeyPath:    expandHome(keyPath),
-			Passphrase: req.Passphrase,
-		}})
-		if err == nil {
-			methods = append(methods, auth...)
-			if req.PrivateKey == "" {
-				break
-			}
+	case targetTypeSSHConfig:
+		configPath := app.sshConfigPath
+		if configPath == "" {
+			configPath = expandHome("~/.ssh/config")
 		}
-	}
-
-	if len(methods) == 0 && req.Password == "" && req.PrivateKey == "" {
-		for _, keyPath := range defaultKeyPaths() {
-			auth, err := sshc.LoadAuth("", []*sshc.Identity{{
-				KeyPath:    keyPath,
-				Passphrase: req.Passphrase,
-			}})
-			if err == nil {
-				methods = append(methods, auth...)
-				break
-			}
+		var err error
+		host, err = sshc.LoadConfig(req.Host, configPath)
+		if err != nil {
+			return nil, err
 		}
+		if req.Username != "" {
+			host.User = req.Username
+		}
+		if req.Port != "" {
+			host.Port = req.Port
+		}
+	default:
+		return nil, fmt.Errorf("unsupported target type %q", req.TargetType)
 	}
-
-	if len(methods) == 0 {
-		return nil, fmt.Errorf("no valid authentication method provided. Please provide either a password or a valid private key")
+	if host.User == "" || host.Hostname == "" {
+		return nil, fmt.Errorf("SSH target did not resolve a hostname and username")
 	}
-	return methods, nil
+	if host.Port == "" {
+		host.Port = "22"
+	}
+	port, err := strconv.Atoi(host.Port)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("resolved SSH port must be between 1 and 65535")
+	}
+	if host.Timeout <= 0 {
+		host.Timeout = 30 * time.Second
+	}
+	host.KnownHostsPath = app.knownHostsPath
+	return host, nil
 }
 
-// candidateKeyPaths returns the first-pass key paths for the connection.
-func candidateKeyPaths(req connectRequest, hostConfig *sshc.Host) []string {
-	if req.PrivateKey != "" {
-		return []string{req.PrivateKey}
+func (app *sshApplication) authMethods(
+	ctx context.Context,
+	req sshConnectInput,
+	host *sshc.Host,
+) ([]ssh.AuthMethod, error) {
+	switch req.Auth.Method {
+	case authTypePassword:
+		return []ssh.AuthMethod{ssh.Password(req.Auth.Password)}, nil
+	case authTypeSecret:
+		if app.secrets == nil {
+			return nil, fmt.Errorf("Secret Manager is unavailable")
+		}
+		password, err := app.secrets.Reveal(ctx, req.Auth.SecretName, req.Auth.SecretPassphrase)
+		if err != nil {
+			return nil, fmt.Errorf("reveal Secret Manager entry: %w", err)
+		}
+		if password == "" {
+			return nil, fmt.Errorf("Secret Manager entry is empty")
+		}
+		return []ssh.AuthMethod{ssh.Password(password)}, nil
+	case authTypeKey:
+		keyPaths := candidateKeyPaths(req, host)
+		identities := make([]*sshc.Identity, 0, len(keyPaths))
+		for _, path := range keyPaths {
+			identities = append(identities, &sshc.Identity{
+				KeyPath:    expandHome(path),
+				Passphrase: req.Auth.Passphrase,
+			})
+		}
+		return sshc.LoadAuth("", identities)
+	default:
+		return nil, fmt.Errorf("unsupported authentication method %q", req.Auth.Method)
 	}
-	if hostConfig.IdentityFile != "" {
-		return []string{hostConfig.IdentityFile}
-	}
-	if req.Password == "" {
-		return defaultKeyPaths()
-	}
-	return nil
 }
 
-// defaultKeyPaths lists the conventional private keys tried when no auth is
-// explicitly supplied.
+func candidateKeyPaths(req sshConnectInput, host *sshc.Host) []string {
+	if req.Auth.PrivateKey != "" {
+		return []string{req.Auth.PrivateKey}
+	}
+	if req.TargetType == targetTypeSSHConfig && host.IdentityFile != "" {
+		return []string{host.IdentityFile}
+	}
+	return defaultKeyPaths()
+}
+
 func defaultKeyPaths() []string {
-	return []string{"$HOME/.ssh/id_rsa", "$HOME/.ssh/id_ed25519", "$HOME/.ssh/id_ecdsa"}
+	return []string{"$HOME/.ssh/id_ed25519", "$HOME/.ssh/id_ecdsa", "$HOME/.ssh/id_rsa"}
 }

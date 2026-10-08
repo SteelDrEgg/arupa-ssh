@@ -3,22 +3,24 @@ package sshc
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Host is the resolved target configuration used by the SSH core.
 type Host struct {
-	User         string
-	Host         string
-	Port         string
-	Hostname     string
-	IdentityFile string
-	Timeout      time.Duration
+	User           string
+	Host           string
+	Port           string
+	Hostname       string
+	IdentityFile   string
+	HostKeyAlias   string
+	KnownHostsPath string
+	Timeout        time.Duration
 }
 
 type Identity struct {
@@ -64,19 +66,23 @@ func LoadAuth(password string, identities []*Identity) ([]ssh.AuthMethod, error)
 		authMethods = append(authMethods, ssh.Password(password))
 	}
 
+	var lastKeyError error
 	for _, id := range identities {
 		if id == nil {
 			continue
 		}
 		signer, err := LoadKey(id)
 		if err != nil {
-			log.Printf("failed to load key from %s: %v", id.KeyPath, err)
+			lastKeyError = err
 			continue
 		}
 		authMethods = append(authMethods, ssh.PublicKeys(signer))
 	}
 
 	if len(authMethods) == 0 {
+		if lastKeyError != nil {
+			return nil, lastKeyError
+		}
 		return nil, fmt.Errorf("no valid authentication methods available")
 	}
 	return authMethods, nil
@@ -85,10 +91,27 @@ func LoadAuth(password string, identities []*Identity) ([]ssh.AuthMethod, error)
 // Connect creates an SSH connection, cancelling both the TCP dial and SSH
 // handshake when ctx is done.
 func Connect(ctx context.Context, host *Host, auth []ssh.AuthMethod) (*ssh.Client, error) {
+	// This service runs headlessly, so host verification is opt-in through an
+	// explicit known_hosts path. Configuring a path switches to strict checking.
+	hostKeyCallback := ssh.InsecureIgnoreHostKey()
+	if host.KnownHostsPath != "" {
+		var err error
+		hostKeyCallback, err = knownhosts.New(host.KnownHostsPath)
+		if err != nil {
+			return nil, fmt.Errorf("load SSH known_hosts file %s: %w", host.KnownHostsPath, err)
+		}
+	}
+	if host.KnownHostsPath != "" && host.HostKeyAlias != "" {
+		knownHostAddress := net.JoinHostPort(host.HostKeyAlias, host.Port)
+		defaultCallback := hostKeyCallback
+		hostKeyCallback = func(_ string, remote net.Addr, key ssh.PublicKey) error {
+			return defaultCallback(knownHostAddress, remote, key)
+		}
+	}
 	sshConfig := &ssh.ClientConfig{
 		User:            host.User,
 		Auth:            auth,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         host.Timeout,
 	}
 	addr := net.JoinHostPort(host.Hostname, host.Port)

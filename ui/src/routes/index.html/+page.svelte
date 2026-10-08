@@ -165,6 +165,16 @@
 		}
 	}
 
+	function clearSubmissionCredentials(submission: ConnectionSubmission) {
+		if (submission.request.auth.method === 'password') {
+			submission.request.auth.password = '';
+		} else if (submission.request.auth.method === 'secret') {
+			submission.request.auth.secret_passphrase = '';
+		} else {
+			submission.request.auth.passphrase = '';
+		}
+	}
+
 	function connect(submission: ConnectionSubmission) {
 		if (connectionState === 'connecting' || connectionState === 'connected') return;
 		setState('connecting', { kind: 'connecting' });
@@ -173,9 +183,11 @@
 
 		candidate.addEventListener('open', () => {
 			if (!isActive(candidate)) return;
-			sendSocket(candidate, 'connect_ssh', submission.request);
-			submission.request.password = '';
-			submission.request.passphrase = '';
+			try {
+				sendSocket(candidate, 'connect_ssh', submission.request);
+			} finally {
+				clearSubmissionCredentials(submission);
+			}
 		});
 
 		candidate.addEventListener('message', (event) => {
@@ -193,6 +205,7 @@
 		});
 
 		candidate.addEventListener('error', () => {
+			clearSubmissionCredentials(submission);
 			if (!isActive(candidate)) return;
 			setState('error', {
 				kind: 'error',
@@ -202,6 +215,7 @@
 		});
 
 		candidate.addEventListener('close', (event) => {
+			clearSubmissionCredentials(submission);
 			if (!isActive(candidate)) return;
 			socket = null;
 			if (connectionState === 'connected' || connectionState === 'connecting') {

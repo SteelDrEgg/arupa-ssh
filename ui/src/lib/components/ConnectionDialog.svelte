@@ -1,7 +1,7 @@
 <script lang="ts">
 	import ConnectionForm from '$lib/components/ConnectionForm.svelte';
 	import * as m from '$lib/paraglide/messages.js';
-	import { listConnections, listSecrets, revealSecret } from '$lib/utils/api';
+	import { listConnections, listSecrets } from '$lib/utils/api';
 	import { locale } from '$lib/utils/locale';
 	import type {
 		ConnectionFormModel,
@@ -21,6 +21,7 @@
 	function emptyForm(): ConnectionFormModel {
 		return {
 			host: 'localhost',
+			targetType: 'address',
 			port: '22',
 			username: '',
 			authMethod: 'password',
@@ -89,7 +90,8 @@
 		const connection = savedConnections.find((item) => item.name === savedName);
 		if (!connection) return;
 		form.host = connection.host;
-		form.port = connection.port || '22';
+		form.targetType = connection.target_type || 'address';
+		form.port = connection.port || (form.targetType === 'address' ? '22' : '');
 		form.username = connection.username;
 		form.privateKey = connection.private_key || '';
 		form.password = '';
@@ -111,6 +113,7 @@
 		if (!name) throw new Error(m.connection_name_required({}, localeOptions));
 		return {
 			name,
+			target_type: form.targetType,
 			host: form.host.trim(),
 			port: form.port.trim(),
 			username: form.username.trim(),
@@ -125,32 +128,44 @@
 		errorMessage = '';
 		preparing = true;
 		try {
-			if (!form.host.trim() || !form.port.trim() || !form.username.trim()) {
+			if (!form.host.trim() || (form.targetType === 'address' && (!form.port.trim() || !form.username.trim()))) {
 				throw new Error(m.host_port_username_required({}, localeOptions));
 			}
-			const numericPort = Number(form.port);
-			if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
-				throw new Error(m.port_range({}, localeOptions));
+			if (form.port.trim()) {
+				const numericPort = Number(form.port);
+				if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
+					throw new Error(m.port_range({}, localeOptions));
+				}
 			}
 
 			const request: ConnectionSubmission['request'] = {
+				target_type: form.targetType,
 				host: form.host.trim(),
 				port: form.port.trim(),
-				username: form.username.trim()
+				username: form.username.trim(),
+				auth: { method: 'password', password: '' }
 			};
 			if (form.authMethod === 'password') {
 				if (form.passwordSource === 'manual') {
-					request.password = form.password;
+					if (!form.password) throw new Error(m.password_required({}, localeOptions));
+					request.auth = { method: 'password', password: form.password };
 				} else {
 					if (!selectedSecret) throw new Error(m.select_secret_error({}, localeOptions));
 					if (selectedSecret.protection === 'passphrase' && !form.secretPassphrase) {
 						throw new Error(m.secret_requires_passphrase({}, localeOptions));
 					}
-					request.password = await revealSecret(selectedSecret.name, form.secretPassphrase);
+					request.auth = {
+						method: 'secret',
+						secret_name: selectedSecret.name,
+						secret_passphrase: form.secretPassphrase
+					};
 				}
 			} else {
-				request.privateKey = form.privateKey.trim();
-				request.passphrase = form.passphrase;
+				request.auth = {
+					method: 'key',
+					private_key: form.privateKey.trim(),
+					passphrase: form.passphrase
+				};
 			}
 			onconnect({ request, settings: settingsFromForm() });
 		} catch (error) {

@@ -13,6 +13,7 @@
 	function emptyForm(): ConnectionFormModel {
 		return {
 			host: '',
+			targetType: 'address',
 			port: '22',
 			username: '',
 			authMethod: 'password',
@@ -29,7 +30,8 @@
 		return {
 			...emptyForm(),
 			host: connection.host,
-			port: connection.port || '22',
+			targetType: connection.target_type || 'address',
+			port: connection.port || ((connection.target_type || 'address') === 'address' ? '22' : ''),
 			username: connection.username,
 			authMethod: connection.auth_type,
 			passwordSource: connection.secret_name ? 'secret' : 'manual',
@@ -107,15 +109,18 @@
 	function editedConnection(): SavedConnection {
 		const name = connectionName.trim();
 		if (!name) throw new Error(m.connection_name_required({}, localeOptions));
-		if (!form.host.trim() || !form.port.trim() || !form.username.trim()) {
+		if (!form.host.trim() || (form.targetType === 'address' && (!form.port.trim() || !form.username.trim()))) {
 			throw new Error(m.host_port_username_required({}, localeOptions));
 		}
-		const numericPort = Number(form.port);
-		if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
-			throw new Error(m.port_range({}, localeOptions));
+		if (form.port.trim()) {
+			const numericPort = Number(form.port);
+			if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
+				throw new Error(m.port_range({}, localeOptions));
+			}
 		}
 		return {
 			name,
+			target_type: form.targetType,
 			host: form.host.trim(),
 			port: form.port.trim(),
 			username: form.username.trim(),

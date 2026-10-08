@@ -16,19 +16,26 @@ import (
 const (
 	savedConnectionsPath = "/ssh/api/connections"
 
-	sshConfigPathParam    = "ssh_config_path"
-	connectionParamPrefix = "connection."
-	connectionHostField   = "host"
-	connectionPortField   = "port"
-	connectionUserField   = "username"
-	connectionAuthField   = "auth"
+	sshConfigPathParam     = "ssh_config_path"
+	sshKnownHostsPathParam = "ssh_known_hosts_path"
+	connectionParamPrefix  = "connection."
+	connectionTargetField  = "target_type"
+	connectionHostField    = "host"
+	connectionPortField    = "port"
+	connectionUserField    = "username"
+	connectionAuthField    = "auth"
+
+	targetTypeAddress   = "address"
+	targetTypeSSHConfig = "ssh_config"
 
 	authTypePassword     = "password"
+	authTypeSecret       = "secret"
 	authTypeKey          = "key"
-	legacyAuthTypeSecret = "secret"
+	legacyAuthTypeSecret = authTypeSecret
 )
 
 var connectionParamFields = []string{
+	connectionTargetField,
 	connectionHostField,
 	connectionPortField,
 	connectionUserField,
@@ -39,6 +46,7 @@ var connectionParamFields = []string{
 // Passwords, secret values, and passphrases deliberately have no field here.
 type savedConnection struct {
 	Name       string `json:"name"`
+	TargetType string `json:"target_type,omitempty"`
 	Host       string `json:"host"`
 	Port       string `json:"port"`
 	Username   string `json:"username"`
@@ -63,13 +71,14 @@ type savedConnectionDeleteRequest struct {
 
 // sshSettings is the application configuration read from the Params snapshot.
 type sshSettings struct {
-	SSHConfigPath string
-	Connections   map[string]savedConnection
+	SSHConfigPath  string
+	KnownHostsPath string
+	Connections    map[string]savedConnection
 }
 
 // sshSettingsStore is the sole owner of the SSH plugin Params schema. A
 // profile named "host1" is stored as readable entries such as
-// connection.host1.host and connection.host1.auth.
+// connection.host1.host, connection.host1.target_type, and connection.host1.auth.
 type sshSettingsStore struct {
 	params arupa.ParamsClient
 }
@@ -101,12 +110,13 @@ func (store sshSettingsStore) Load(params map[string]string) (sshSettings, error
 		connections[connection.Name] = connection
 	}
 	return sshSettings{
-		SSHConfigPath: params[sshConfigPathParam],
-		Connections:   connections,
+		SSHConfigPath:  params[sshConfigPathParam],
+		KnownHostsPath: params[sshKnownHostsPathParam],
+		Connections:    connections,
 	}, nil
 }
 
-// Save persists one connection as four human-readable Params entries.
+// Save persists one connection as human-readable Params entries.
 func (store sshSettingsStore) Save(ctx context.Context, connection savedConnection) error {
 	if store.params == nil {
 		return fmt.Errorf("persist SSH connection: plugin parameters are unavailable")
@@ -175,11 +185,12 @@ func connectionFromParams(name string, values map[string]string) (savedConnectio
 		return savedConnection{}, fmt.Errorf("parse connection %q: %w", name, err)
 	}
 	connection := savedConnection{
-		Name:     name,
-		Host:     values[connectionHostField],
-		Port:     values[connectionPortField],
-		Username: values[connectionUserField],
-		AuthType: authType,
+		Name:       name,
+		TargetType: values[connectionTargetField],
+		Host:       values[connectionHostField],
+		Port:       values[connectionPortField],
+		Username:   values[connectionUserField],
+		AuthType:   authType,
 	}
 	if authType == authTypeKey {
 		connection.PrivateKey = reference
@@ -200,16 +211,18 @@ func connectionParamValues(connection savedConnection) (map[string]string, error
 	}
 	prefix := connectionParamPrefix + normalized.Name + "."
 	return map[string]string{
-		prefix + connectionHostField: normalized.Host,
-		prefix + connectionPortField: normalized.Port,
-		prefix + connectionUserField: normalized.Username,
-		prefix + connectionAuthField: connectionAuth(normalized),
+		prefix + connectionTargetField: normalized.TargetType,
+		prefix + connectionHostField:   normalized.Host,
+		prefix + connectionPortField:   normalized.Port,
+		prefix + connectionUserField:   normalized.Username,
+		prefix + connectionAuthField:   connectionAuth(normalized),
 	}, nil
 }
 
 func connectionParamKeys(name string) []string {
 	prefix := connectionParamPrefix + name + "."
 	return []string{
+		prefix + connectionTargetField,
 		prefix + connectionHostField,
 		prefix + connectionPortField,
 		prefix + connectionUserField,
@@ -292,7 +305,7 @@ func (s *sshServer) savedConnections() []savedConnection {
 }
 
 func (s *sshServer) saveConnectionResponse(w http.ResponseWriter, req *http.Request) {
-	body, err := io.ReadAll(req.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 1<<20))
 	if err != nil {
 		writeConnectionJSON(w, http.StatusBadRequest, map[string]any{
 			"success": false,
@@ -340,7 +353,7 @@ func (s *sshServer) saveConnectionResponse(w http.ResponseWriter, req *http.Requ
 }
 
 func (s *sshServer) updateConnectionResponse(w http.ResponseWriter, req *http.Request) {
-	body, err := io.ReadAll(req.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 1<<20))
 	if err != nil {
 		writeConnectionJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request body"})
 		return
@@ -390,7 +403,7 @@ func (s *sshServer) updateConnectionResponse(w http.ResponseWriter, req *http.Re
 }
 
 func (s *sshServer) deleteConnectionResponse(w http.ResponseWriter, req *http.Request) {
-	body, err := io.ReadAll(req.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 1<<20))
 	if err != nil {
 		writeConnectionJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request body"})
 		return
@@ -430,6 +443,7 @@ func (s *sshServer) deleteConnectionResponse(w http.ResponseWriter, req *http.Re
 
 func normalizeSavedConnection(connection savedConnection) (savedConnection, error) {
 	connection.Name = strings.TrimSpace(connection.Name)
+	connection.TargetType = strings.TrimSpace(connection.TargetType)
 	connection.Host = strings.TrimSpace(connection.Host)
 	connection.Port = strings.TrimSpace(connection.Port)
 	connection.Username = strings.TrimSpace(connection.Username)
@@ -440,15 +454,30 @@ func normalizeSavedConnection(connection savedConnection) (savedConnection, erro
 	if connection.Name == "" || len(connection.Name) > 80 {
 		return savedConnection{}, fmt.Errorf("connection name is required and must not exceed 80 characters")
 	}
-	if connection.Host == "" || connection.Username == "" {
-		return savedConnection{}, fmt.Errorf("host and username are required")
+	if connection.TargetType == "" {
+		connection.TargetType = targetTypeAddress
 	}
-	if connection.Port == "" {
-		connection.Port = "22"
+	if connection.Host == "" {
+		return savedConnection{}, fmt.Errorf("host is required")
 	}
-	port, err := strconv.Atoi(connection.Port)
-	if err != nil || port < 1 || port > 65535 {
-		return savedConnection{}, fmt.Errorf("port must be between 1 and 65535")
+	switch connection.TargetType {
+	case targetTypeAddress:
+		if connection.Username == "" {
+			return savedConnection{}, fmt.Errorf("username is required for a direct address")
+		}
+		if connection.Port == "" {
+			connection.Port = "22"
+		}
+	case targetTypeSSHConfig:
+		// Empty username and port let the selected SSH config alias supply them.
+	default:
+		return savedConnection{}, fmt.Errorf("unsupported target type %q", connection.TargetType)
+	}
+	if connection.Port != "" {
+		port, err := strconv.Atoi(connection.Port)
+		if err != nil || port < 1 || port > 65535 {
+			return savedConnection{}, fmt.Errorf("port must be between 1 and 65535")
+		}
 	}
 
 	switch connection.AuthType {

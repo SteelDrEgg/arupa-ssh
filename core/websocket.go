@@ -13,18 +13,14 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"golang.org/x/crypto/ssh"
-
-	"arupa-ssh/core/internal/sshc"
 )
 
 const (
-	proxyAuthenticatedHeader = "X-Arupa-Authenticated"
-	websocketWriteWait       = 10 * time.Second
-	websocketPongWait        = 60 * time.Second
-	websocketPingPeriod      = 45 * time.Second
-	websocketMaxMessageSize  = 1 << 20
-	maxTerminalDimension     = 4096
+	websocketWriteWait      = 10 * time.Second
+	websocketPongWait       = 60 * time.Second
+	websocketPingPeriod     = 45 * time.Second
+	websocketMaxMessageSize = 1 << 20
+	maxTerminalDimension    = 4096
 )
 
 var terminalUpgrader = websocket.Upgrader{
@@ -35,6 +31,42 @@ var terminalUpgrader = websocket.Upgrader{
 type websocketEnvelope struct {
 	Event string          `json:"event"`
 	Data  json.RawMessage `json:"data,omitempty"`
+}
+
+// connectSSHEventData is the WebSocket wire format. It is translated to the
+// transport-independent sshConnectInput before reaching the SSH application.
+type connectSSHEventData struct {
+	TargetType string               `json:"target_type,omitempty"`
+	Host       string               `json:"host"`
+	Port       string               `json:"port,omitempty"`
+	Username   string               `json:"username,omitempty"`
+	Auth       connectSSHAuthFields `json:"auth"`
+}
+
+type connectSSHAuthFields struct {
+	Method           string `json:"method"`
+	Password         string `json:"password,omitempty"`
+	SecretName       string `json:"secret_name,omitempty"`
+	SecretPassphrase string `json:"secret_passphrase,omitempty"`
+	PrivateKey       string `json:"private_key,omitempty"`
+	Passphrase       string `json:"passphrase,omitempty"`
+}
+
+func (request connectSSHEventData) input() sshConnectInput {
+	return sshConnectInput{
+		TargetType: request.TargetType,
+		Host:       request.Host,
+		Port:       request.Port,
+		Username:   request.Username,
+		Auth: sshAuthenticationInput{
+			Method:           request.Auth.Method,
+			Password:         request.Auth.Password,
+			SecretName:       request.Auth.SecretName,
+			SecretPassphrase: request.Auth.SecretPassphrase,
+			PrivateKey:       request.Auth.PrivateKey,
+			Passphrase:       request.Auth.Passphrase,
+		},
+	}
 }
 
 type websocketOutbound struct {
@@ -62,10 +94,6 @@ type webTerminal struct {
 }
 
 func (s *sshServer) handleWebSocket(w http.ResponseWriter, req *http.Request) {
-	//if !strings.EqualFold(strings.TrimSpace(req.Header.Get(proxyAuthenticatedHeader)), "true") {
-	//	http.Error(w, "authentication required", http.StatusUnauthorized)
-	//	return
-	//}
 	conn, err := terminalUpgrader.Upgrade(w, req, nil)
 	if err != nil {
 		return
@@ -118,11 +146,11 @@ func (c *webTerminal) readLoop() {
 func (c *webTerminal) handle(message websocketEnvelope) error {
 	switch strings.TrimSpace(message.Event) {
 	case eventConnectSSH:
-		var request connectRequest
-		if err := json.Unmarshal(message.Data, &request); err != nil {
+		var payload connectSSHEventData
+		if err := json.Unmarshal(message.Data, &payload); err != nil {
 			return fmt.Errorf("invalid connection data: %w", err)
 		}
-		normalized, err := normalizeConnectRequest(request)
+		normalized, err := normalizeSSHConnectInput(payload.input())
 		if err != nil {
 			return fmt.Errorf("invalid connection data: %w", err)
 		}
@@ -171,13 +199,11 @@ func (c *webTerminal) handle(message websocketEnvelope) error {
 	}
 }
 
-func (c *webTerminal) beginConnect(request connectRequest) error {
-	hostConfig, authMethods, err := c.server.prepareSSH(request)
+func (c *webTerminal) beginConnect(request sshConnectInput) error {
+	request, err := normalizeSSHConnectInput(request)
 	if err != nil {
 		return err
 	}
-	request.Password = ""
-	request.Passphrase = ""
 
 	c.stateMu.Lock()
 	if c.closed {
@@ -188,7 +214,7 @@ func (c *webTerminal) beginConnect(request connectRequest) error {
 	attempt := c.attempt
 	previousCancel := c.connectCancel
 	previousSession := c.session
-	connectContext, cancel := context.WithTimeout(c.ctx, hostConfig.Timeout)
+	connectContext, cancel := context.WithCancel(c.ctx)
 	c.connectCancel = cancel
 	c.session = nil
 	c.stateMu.Unlock()
@@ -200,7 +226,7 @@ func (c *webTerminal) beginConnect(request connectRequest) error {
 		previousSession.close()
 	}
 
-	go c.connect(attempt, connectContext, cancel, request, hostConfig, authMethods)
+	go c.connect(attempt, connectContext, cancel, request)
 	return nil
 }
 
@@ -208,12 +234,17 @@ func (c *webTerminal) connect(
 	attempt uint64,
 	ctx context.Context,
 	cancel context.CancelFunc,
-	request connectRequest,
-	hostConfig *sshc.Host,
-	authMethods []ssh.AuthMethod,
+	request sshConnectInput,
 ) {
 	defer cancel()
-	session, stdout, err := openSSH(ctx, hostConfig, authMethods)
+	if c.server.app == nil {
+		c.finishConnectError(attempt, ctx, fmt.Errorf("SSH application is unavailable"))
+		return
+	}
+	session, stdout, err := c.server.app.Connect(ctx, request)
+	request.Auth.Password = ""
+	request.Auth.SecretPassphrase = ""
+	request.Auth.Passphrase = ""
 	if err != nil {
 		c.finishConnectError(attempt, ctx, err)
 		return
@@ -246,7 +277,7 @@ func (c *webTerminal) finishConnectError(attempt uint64, ctx context.Context, co
 		return
 	}
 	message := connectErr.Error()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(connectErr, context.DeadlineExceeded) {
 		message = "SSH connection timed out"
 	}
 	if err := c.send(eventSSHError, message); err != nil {
