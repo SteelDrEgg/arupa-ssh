@@ -25,10 +25,14 @@ export type ConnectionFormModel = {
 	secretPassphrase: string;
 };
 
+export type SecretProtection = 'identity' | 'passphrase';
+
 export type SecretMeta = {
 	name: string;
-	description?: string;
-	encryption?: string;
+	description: string;
+	allowed_plugins: string[];
+	protection: SecretProtection;
+	updated_at: string;
 };
 
 export type ConnectRequest = {

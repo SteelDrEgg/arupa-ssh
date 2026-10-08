@@ -143,7 +143,7 @@
 					request.password = form.password;
 				} else {
 					if (!selectedSecret) throw new Error(m.select_secret_error({}, localeOptions));
-					if (selectedSecret.encryption === 'scrypt' && !form.secretPassphrase) {
+					if (selectedSecret.protection === 'passphrase' && !form.secretPassphrase) {
 						throw new Error(m.secret_requires_passphrase({}, localeOptions));
 					}
 					request.password = await revealSecret(selectedSecret.name, form.secretPassphrase);

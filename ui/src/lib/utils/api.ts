@@ -7,6 +7,8 @@ type ApiPayload = {
 	[key: string]: unknown;
 };
 
+const secretCollectionPath = '/secret-manager/secrets';
+
 async function requestJSON<T extends ApiPayload>(path: string, options: RequestInit = {}): Promise<T> {
 	const response = await fetch(path, {
 		credentials: 'same-origin',
@@ -63,15 +65,24 @@ export async function deleteConnection(name: string): Promise<void> {
 }
 
 export async function listSecrets(): Promise<SecretMeta[]> {
-	const payload = await requestJSON<ApiPayload & { keys: SecretMeta[] }>('/keys');
+	const payload = await requestJSON<ApiPayload & { keys: SecretMeta[] }>(secretCollectionPath);
 	return Array.isArray(payload.keys) ? payload.keys : [];
 }
 
 export async function revealSecret(name: string, passphrase: string): Promise<string> {
-	const payload = await requestJSON<ApiPayload & { value: string }>('/keys/reveal', {
-		method: 'POST',
-		body: JSON.stringify({ name, passphrase })
-	});
-	if (!payload.value) throw new Error(m.selected_secret_empty());
+	const payload = await requestJSON<ApiPayload & { value: string }>(
+		`${secretResourcePath(name)}/reveal`,
+		{
+			method: 'POST',
+			body: JSON.stringify(passphrase ? { passphrase } : {})
+		}
+	);
+	if (typeof payload.value !== 'string') throw new Error(m.selected_secret_empty());
 	return payload.value;
+}
+
+function secretResourcePath(name: string): string {
+	// Browsers normalize a single-dot path segment, including its encoded form.
+	if (name === '.') return `${secretCollectionPath}/~.`;
+	return `${secretCollectionPath}/${encodeURIComponent(name)}`;
 }

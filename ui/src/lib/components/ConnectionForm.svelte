@@ -18,7 +18,7 @@
 	} = $props();
 
 	let selectedSecret = $derived(secrets.find((secret) => secret.name === model.secretName));
-	let secretNeedsPassphrase = $derived(selectedSecret?.encryption === 'scrypt');
+	let secretNeedsPassphrase = $derived(selectedSecret?.protection === 'passphrase');
 	let localeOptions = $derived({ locale: $locale });
 
 	function selectAuth(method: ConnectionFormModel['authMethod']) {
@@ -125,7 +125,7 @@
 					{/if}
 					{#each secrets as secret}
 						<option value={secret.name}>
-							{secret.name}{secret.encryption === 'scrypt'
+							{secret.name}{secret.protection === 'passphrase'
 								? ` ${m.passphrase_suffix({}, localeOptions)}`
 								: ''}
 						</option>
