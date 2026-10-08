@@ -1,4 +1,9 @@
-# Arupa SSH
+<h1 align="center">Arupa-SSH</h1>
+
+<p align="center">
+<img src="docs/preview.png">
+</p>
+
 
 Arupa SSH is a service for [Arupa](https://github.com/SteelDrEgg/Arupa) that
 provides a browser-based terminal for connecting to SSH servers. You
@@ -73,4 +78,4 @@ The package is written to `plugins/ssh.plg`.
 ## Development
 
 Implementation notes, API contracts, and local development details are in
-[DEVELOPMENT.md](DEVELOPMENT.md).
+[DEVELOPMENT.md](docs/DEVELOPMENT.md).
